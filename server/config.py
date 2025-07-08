@@ -18,7 +18,7 @@ class Config:
     
     # 服务器配置
     HOST = os.getenv("HOST", "0.0.0.0")
-    PORT = int(os.getenv("PORT", "8000"))
+    PORT = int(os.getenv("PORT", "6006"))
     
     # 安全配置（预留用于将来扩展）
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")

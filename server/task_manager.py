@@ -90,8 +90,10 @@ class TaskManager:
                 )
                 self._result_pool[task_id] = result
                 
-                # 清理任务文件
-                FileManager.cleanup_task_files(task_id, task.zip_file_path)
+                # 只清理ZIP文件，保留结果文件
+                if task.zip_file_path and os.path.exists(task.zip_file_path):
+                    os.remove(task.zip_file_path)
+                    logger.info(f"Cleaned up zip file: {task.zip_file_path}")
                 
                 # 从处理中任务池移除
                 if task_id in self._processing_tasks:

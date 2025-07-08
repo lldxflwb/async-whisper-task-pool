@@ -459,8 +459,8 @@ class WhisperClient:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Whisper转录客户端")
-    parser.add_argument("--server", default="http://localhost:8000", 
-                       help="Whisper API服务器地址 (默认: http://localhost:8000)")
+    parser.add_argument("--server", default="http://localhost:6006", 
+                       help="Whisper API服务器地址 (默认: http://localhost:6006)")
     parser.add_argument("--scan-dir", required=True,
                        help="要扫描的视频文件目录")
     parser.add_argument("--output-dir", 

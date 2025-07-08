@@ -135,7 +135,8 @@ class WhisperWorker:
                     "--model", model,
                     "--output_dir", temp_output_dir,
                     "--output_format", "srt",
-                    "--verbose", "True"    # 增加详细输出
+                    "--max_words_per_line", 20,
+                    "--max_line_count", 2,
                 ]
                 
                 logger.info(f"Executing command: {' '.join(cmd)}")

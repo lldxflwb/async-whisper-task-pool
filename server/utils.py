@@ -118,7 +118,7 @@ class ZipFileHandler:
         """解压任务ZIP文件"""
         try:
             # 创建一个持久的临时目录来存放解压的文件
-            extract_dir = tempfile.mkdtemp(prefix='whisper_extract_')
+            extract_dir = tempfile.mkdtemp(prefix='w_')
             
             # 在子目录中进行解密操作
             with tempfile.TemporaryDirectory() as temp_dir:
