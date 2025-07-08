@@ -112,7 +112,7 @@ class WhisperClient:
     def check_server_health(self) -> bool:
         """检查服务器健康状态"""
         try:
-            response = requests.get(f"{self.server_url}/health", timeout=10)
+            response = requests.get(f"{self.server_url}/health", timeout=30)  # 增加超时时间
             if response.status_code == 200:
                 self.logger.info("✓ 服务器连接正常")
                 return True
@@ -162,12 +162,12 @@ class WhisperClient:
                 str(temp_audio_path)
             ]
             
-            # 执行转换
+            # 执行转换（移除超时限制）
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
-                text=True, 
-                timeout=300  # 5分钟超时
+                text=True
+                # 移除 timeout=300 限制
             )
             
             if result.returncode == 0:
@@ -183,11 +183,6 @@ class WhisperClient:
                     temp_audio_path.unlink()
                 return None
                 
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"❌ 音频转换超时: {video_path.name}")
-            if temp_audio_path.exists():
-                temp_audio_path.unlink()
-            return None
         except Exception as e:
             self.logger.error(f"❌ 音频转换异常: {video_path.name}, 错误: {e}")
             if temp_audio_path.exists():
@@ -255,7 +250,7 @@ class WhisperClient:
                     f"{self.server_url}/tasks/submit",
                     data=data,
                     files=files,
-                    timeout=30
+                    timeout=120  # 增加上传超时时间到2分钟
                 )
             
             if response.status_code == 200:
@@ -277,29 +272,39 @@ class WhisperClient:
             self.logger.error(f"❌ 提交任务异常: {e}")
             return False
     
-    def wait_for_result(self, task_id: str, timeout: int = 600) -> Optional[str]:
-        """等待任务完成并获取结果"""
+    def wait_for_result(self, task_id: str, timeout: int = None) -> Optional[str]:
+        """等待任务完成并获取结果（可无限等待）"""
         start_time = time.time()
         
-        while time.time() - start_time < timeout:
+        while True:  # 无限循环，直到任务完成或失败
             try:
                 # 检查任务结果
                 response = requests.get(
                     f"{self.server_url}/tasks/{task_id}/result",
-                    timeout=10
+                    timeout=30  # 保持网络请求超时，但增加到30秒
                 )
                 
                 if response.status_code == 200:
                     result = response.json()
                     if result.get('srt_content'):
-                        self.logger.info(f"✓ 任务完成: {task_id}")
-                        return result['srt_content']
+                        elapsed = time.time() - start_time
+                        srt_content = result['srt_content']
+                        self.logger.info(f"✓ 任务完成: {task_id} (耗时: {elapsed:.1f}秒, SRT长度: {len(srt_content)}字符)")
+                        return srt_content
                     elif result.get('status') == 'failed':
                         self.logger.error(f"❌ 任务失败: {task_id}")
                         return None
+                    else:
+                        # 显示任务状态
+                        status = result.get('status', 'unknown')
+                        self.logger.info(f"任务状态: {task_id} -> {status}")
                 else:
-                    # 任务可能还在处理中或已被清理
-                    pass
+                    self.logger.warning(f"获取任务结果失败: {response.status_code}")
+                
+                # 如果设置了超时时间，检查是否超时
+                if timeout and time.time() - start_time > timeout:
+                    self.logger.error(f"❌ 任务超时: {task_id}")
+                    return None
                 
                 # 等待一段时间再检查
                 time.sleep(5)
@@ -307,21 +312,33 @@ class WhisperClient:
             except requests.exceptions.RequestException as e:
                 self.logger.warning(f"检查任务状态时网络错误: {e}")
                 time.sleep(10)
-        
-        self.logger.error(f"❌ 任务超时: {task_id}")
-        return None
     
     def save_srt_file(self, video_path: Path, srt_content: str) -> bool:
         """保存SRT字幕文件到视频目录"""
         try:
             srt_path = video_path.with_suffix('.srt')
             
+            self.logger.info(f"准备保存字幕文件: {srt_path}")
+            self.logger.info(f"SRT内容长度: {len(srt_content)} 字符")
+            
+            # 确保目标目录存在
+            srt_path.parent.mkdir(parents=True, exist_ok=True)
+            
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write(srt_content)
             
-            self.logger.info(f"✓ 字幕文件已保存: {srt_path}")
-            return True
+            # 验证文件是否成功写入
+            if srt_path.exists():
+                file_size = srt_path.stat().st_size
+                self.logger.info(f"✓ 字幕文件已保存: {srt_path} (大小: {file_size} 字节)")
+                return True
+            else:
+                self.logger.error(f"❌ 字幕文件保存失败，文件不存在: {srt_path}")
+                return False
             
+        except PermissionError as e:
+            self.logger.error(f"❌ 保存字幕文件权限不足: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"❌ 保存字幕文件失败: {e}")
             return False
@@ -354,8 +371,10 @@ class WhisperClient:
         self.logger.info(f"开始处理: {video_path}")
         
         # 1. 转换为音频（保存到临时目录）
+        self.logger.info(f"步骤1: 转换视频为音频")
         audio_path = self.convert_to_audio(video_path)
         if not audio_path:
+            self.logger.error(f"音频转换失败: {video_path}")
             return False
         
         task_id = str(uuid.uuid4())
@@ -363,27 +382,40 @@ class WhisperClient:
         
         try:
             # 2. 创建任务包（保存到临时目录）
+            self.logger.info(f"步骤2: 创建任务包")
             zip_path = self.create_task_zip(audio_path, task_id, model)
             if not zip_path:
+                self.logger.error(f"任务包创建失败: {video_path}")
                 return False
             
             # 3. 提交任务
+            self.logger.info(f"步骤3: 提交任务到服务器")
             if not self.submit_task(zip_path, task_id):
+                self.logger.error(f"任务提交失败: {video_path}")
                 return False
             
-            # 4. 等待结果
-            srt_content = self.wait_for_result(task_id)
+            # 4. 等待结果（无超时限制）
+            self.logger.info(f"步骤4: 等待转录完成: {task_id}")
+            srt_content = self.wait_for_result(task_id)  # 移除timeout参数，无限等待
             if not srt_content:
+                self.logger.error(f"获取转录结果失败: {video_path}")
                 return False
             
             # 5. 保存字幕文件（到视频目录）
+            self.logger.info(f"步骤5: 保存字幕文件")
             success = self.save_srt_file(video_path, srt_content)
+            
+            if success:
+                self.logger.info(f"✅ 完整处理成功: {video_path}")
+            else:
+                self.logger.error(f"❌ 字幕文件保存失败: {video_path}")
             
             return success
             
         finally:
             # 6. 清理临时文件（除非指定保留）
             if not keep_files and audio_path and zip_path:
+                self.logger.info(f"步骤6: 清理临时文件")
                 self.cleanup_temp_files(audio_path, zip_path)
     
     def process_all_videos(self, model: str = "large-v3", 

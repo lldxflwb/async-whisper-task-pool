@@ -31,10 +31,10 @@ def main():
         print("❌ 目录不存在，请重新输入")
     
     # Whisper模型
-    print("\n可用模型: tiny, base, small, medium, large-v1, large-v2, large-v3-turbo")
-    model = input("Whisper模型 (默认: large-v3-turbo): ").strip()
+    print("\n可用模型: tiny, base, small, medium, large-v1, large-v2, large-v3")
+    model = input("Whisper模型 (默认: large-v3): ").strip()
     if not model:
-        model = "large-v3-turbo"
+        model = "large-v3"
     
     # 并发数
     max_workers_input = input("最大并发任务数 (默认: 2): ").strip()
