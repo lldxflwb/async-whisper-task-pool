@@ -117,15 +117,16 @@ class ZipFileHandler:
     def extract_task_zip(encrypted_zip_path: str, password: str) -> Dict[str, Any]:
         """解压任务ZIP文件"""
         try:
+            # 创建一个持久的临时目录来存放解压的文件
+            extract_dir = tempfile.mkdtemp(prefix='whisper_extract_')
+            
+            # 在子目录中进行解密操作
             with tempfile.TemporaryDirectory() as temp_dir:
                 # 解密ZIP文件
                 decrypted_zip_path = os.path.join(temp_dir, 'decrypted.zip')
                 FileEncryptor.decrypt_file(encrypted_zip_path, password, decrypted_zip_path)
                 
-                # 解压ZIP文件
-                extract_dir = os.path.join(temp_dir, 'extracted')
-                os.makedirs(extract_dir, exist_ok=True)
-                
+                # 解压ZIP文件到持久的临时目录
                 with zipfile.ZipFile(decrypted_zip_path, 'r') as zipf:
                     zipf.extractall(extract_dir)
                 
@@ -138,7 +139,18 @@ class ZipFileHandler:
                 audio_path = os.path.join(extract_dir, 'audio.ogg')
                 
                 if not os.path.exists(audio_path):
+                    # 列出解压目录中的文件进行调试
+                    files = os.listdir(extract_dir) if os.path.exists(extract_dir) else []
+                    logger.error(f"Audio file not found in extract directory. Files found: {files}")
                     raise FileNotFoundError("Audio file not found in zip")
+                
+                # 验证音频文件不为空
+                if os.path.getsize(audio_path) == 0:
+                    logger.error("Audio file is empty")
+                    raise ValueError("Audio file is empty")
+                
+                logger.info(f"Successfully extracted to: {extract_dir}")
+                logger.info(f"Audio file size: {os.path.getsize(audio_path)} bytes")
                 
                 return {
                     'metadata': metadata,
@@ -147,6 +159,12 @@ class ZipFileHandler:
                 }
         except Exception as e:
             logger.error(f"Extract task zip failed: {e}")
+            # 清理可能创建的目录
+            if 'extract_dir' in locals() and os.path.exists(extract_dir):
+                try:
+                    shutil.rmtree(extract_dir)
+                except Exception:
+                    pass
             raise
 
 class FileManager:

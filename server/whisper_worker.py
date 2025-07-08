@@ -99,12 +99,15 @@ class WhisperWorker:
             logger.error(f"Failed to process task {task.id}: {e}")
             task_manager.fail_task(task.id, str(e))
         finally:
-            # 清理临时文件
+            # 清理临时目录（解压后的文件）
             if temp_dir and os.path.exists(temp_dir):
                 try:
                     shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temp dir: {temp_dir}")
                 except Exception as e:
                     logger.warning(f"Failed to cleanup temp dir: {e}")
+            
+            # 注意：ZIP文件的清理由task_manager处理
     
     async def _transcribe_audio(self, audio_path: str, model: str) -> str:
         """使用Whisper转录音频"""

@@ -75,26 +75,29 @@ class WhisperClient:
         self.output_dir = Path(output_dir) if output_dir else self.scan_dir
         self.password = "whisper-task-password"  # 任务加密密码
         
+        # 创建临时工作目录（在客户端脚本目录）
+        self.temp_dir = Path("temp_whisper_work")
+        self.temp_dir.mkdir(exist_ok=True)
+        
         # 支持的视频格式
         self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.m4v', '.webm'}
         
-        # 设置日志
         self._setup_logging()
-        
-        # 检查ffmpeg
         self._check_ffmpeg()
     
     def _setup_logging(self):
         """设置日志"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('whisper_client.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('WhisperClient')
+        self.logger.setLevel(logging.INFO)
+        
+        # 清除已有的处理器
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+        
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
     
     def _check_ffmpeg(self):
         """检查ffmpeg是否可用"""
@@ -103,13 +106,13 @@ class WhisperClient:
                          capture_output=True, check=True)
             self.logger.info("✓ ffmpeg可用")
         except (subprocess.CalledProcessError, FileNotFoundError):
-            self.logger.error("❌ ffmpeg未找到或不可用，请先安装ffmpeg")
+            self.logger.error("❌ ffmpeg不可用，请安装ffmpeg")
             sys.exit(1)
     
     def check_server_health(self) -> bool:
         """检查服务器健康状态"""
         try:
-            response = requests.get(f"{self.server_url}/health", timeout=5)
+            response = requests.get(f"{self.server_url}/health", timeout=10)
             if response.status_code == 200:
                 self.logger.info("✓ 服务器连接正常")
                 return True
@@ -117,34 +120,31 @@ class WhisperClient:
                 self.logger.error(f"❌ 服务器响应异常: {response.status_code}")
                 return False
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"❌ 无法连接到服务器: {e}")
+            self.logger.error(f"❌ 服务器连接失败: {e}")
             return False
     
     def scan_video_files(self) -> List[Path]:
         """扫描目录中的视频文件"""
-        self.logger.info(f"扫描目录: {self.scan_dir}")
-        
-        if not self.scan_dir.exists():
-            self.logger.error(f"目录不存在: {self.scan_dir}")
-            return []
-        
         video_files = []
-        for file_path in self.scan_dir.rglob('*'):
-            if file_path.is_file() and file_path.suffix.lower() in self.video_extensions:
-                # 检查是否已有对应的srt文件
-                srt_path = file_path.with_suffix('.srt')
+        
+        for video_path in self.scan_dir.rglob('*'):
+            if video_path.is_file() and video_path.suffix.lower() in self.video_extensions:
+                # 检查是否已有字幕文件
+                srt_path = video_path.with_suffix('.srt')
                 if not srt_path.exists():
-                    video_files.append(file_path)
+                    video_files.append(video_path)
                 else:
-                    self.logger.info(f"跳过已有字幕的文件: {file_path.name}")
+                    self.logger.info(f"⏭️ 跳过已有字幕的文件: {video_path.name}")
         
         self.logger.info(f"找到 {len(video_files)} 个需要处理的视频文件")
         return video_files
     
     def convert_to_audio(self, video_path: Path) -> Optional[Path]:
-        """使用ffmpeg将视频转换为音频"""
-        audio_path = video_path.with_suffix('.ogg')
-        temp_audio_path = audio_path.with_name(f"temp_{audio_path.name}")
+        """转换视频为音频（保存到临时目录）"""
+        # 生成唯一的临时文件名
+        safe_name = "".join(c for c in video_path.stem if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        audio_path = self.temp_dir / f"{safe_name}_{video_path.name}.ogg"
+        temp_audio_path = self.temp_dir / f"temp_{audio_path.name}"
         
         try:
             self.logger.info(f"转换音频: {video_path.name}")
@@ -195,7 +195,7 @@ class WhisperClient:
             return None
     
     def create_task_zip(self, audio_path: Path, task_id: str, model: str) -> Optional[Path]:
-        """创建任务压缩包"""
+        """创建任务压缩包（保存到临时目录）"""
         try:
             # 创建临时目录
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -216,8 +216,8 @@ class WhisperClient:
                 audio_dest = os.path.join(temp_dir, 'audio.ogg')
                 shutil.copy2(audio_path, audio_dest)
                 
-                # 创建ZIP文件
-                zip_path = audio_path.with_suffix('.zip')
+                # 创建ZIP文件（保存到临时目录）
+                zip_path = self.temp_dir / f"{task_id}.zip"
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     zipf.write(metadata_path, 'metadata.json')
                     zipf.write(audio_dest, 'audio.ogg')
@@ -229,7 +229,7 @@ class WhisperClient:
                 os.remove(zip_path)
                 
                 # 移动加密文件到最终位置
-                final_zip_path = audio_path.with_suffix('.zip.enc')
+                final_zip_path = self.temp_dir / f"{task_id}.zip.enc"
                 shutil.move(encrypted_zip_path, final_zip_path)
                 
                 self.logger.info(f"✓ 任务包创建完成: {final_zip_path.name}")
@@ -339,12 +339,21 @@ class WhisperClient:
         except Exception as e:
             self.logger.warning(f"清理临时文件失败: {e}")
     
+    def cleanup_temp_dir(self):
+        """清理临时工作目录"""
+        try:
+            if self.temp_dir.exists():
+                shutil.rmtree(self.temp_dir)
+                self.logger.info(f"清理临时目录: {self.temp_dir}")
+        except Exception as e:
+            self.logger.warning(f"清理临时目录失败: {e}")
+    
     def process_single_video(self, video_path: Path, model: str = "large-v3", 
                            keep_files: bool = False) -> bool:
         """处理单个视频文件"""
         self.logger.info(f"开始处理: {video_path}")
         
-        # 1. 转换为音频
+        # 1. 转换为音频（保存到临时目录）
         audio_path = self.convert_to_audio(video_path)
         if not audio_path:
             return False
@@ -353,7 +362,7 @@ class WhisperClient:
         zip_path = None
         
         try:
-            # 2. 创建任务包
+            # 2. 创建任务包（保存到临时目录）
             zip_path = self.create_task_zip(audio_path, task_id, model)
             if not zip_path:
                 return False
@@ -367,7 +376,7 @@ class WhisperClient:
             if not srt_content:
                 return False
             
-            # 5. 保存字幕文件
+            # 5. 保存字幕文件（到视频目录）
             success = self.save_srt_file(video_path, srt_content)
             
             return success
@@ -387,32 +396,31 @@ class WhisperClient:
         
         results = {}
         
-        # 使用线程池处理多个文件
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
-            future_to_video = {
-                executor.submit(self.process_single_video, video_path, model, keep_files): video_path
-                for video_path in video_files
-            }
-            
-            # 处理完成的任务
-            for future in as_completed(future_to_video):
-                video_path = future_to_video[future]
-                try:
-                    success = future.result()
-                    results[str(video_path)] = success
-                    if success:
-                        self.logger.info(f"✅ 处理成功: {video_path.name}")
-                    else:
-                        self.logger.error(f"❌ 处理失败: {video_path.name}")
-                except Exception as e:
-                    self.logger.error(f"❌ 处理异常: {video_path.name}, 错误: {e}")
-                    results[str(video_path)] = False
+        try:
+            # 使用线程池处理多个文件
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                future_to_video = {
+                    executor.submit(self.process_single_video, video_path, model, keep_files): video_path
+                    for video_path in video_files
+                }
+                
+                # 等待任务完成
+                for future in future_to_video:
+                    video_path = future_to_video[future]
+                    try:
+                        success = future.result()
+                        results[str(video_path)] = success
+                        status = "✓" if success else "❌"
+                        self.logger.info(f"{status} {video_path.name}: {'成功' if success else '失败'}")
+                    except Exception as e:
+                        self.logger.error(f"❌ 处理 {video_path.name} 时发生异常: {e}")
+                        results[str(video_path)] = False
         
-        # 统计结果
-        success_count = sum(1 for success in results.values() if success)
-        total_count = len(results)
-        self.logger.info(f"处理完成: {success_count}/{total_count} 个文件成功")
+        finally:
+            # 清理临时目录（除非指定保留）
+            if not keep_files:
+                self.cleanup_temp_dir()
         
         return results
 
