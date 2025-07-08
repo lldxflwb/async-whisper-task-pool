@@ -19,9 +19,9 @@ def main():
     print("\n📁 请配置以下参数:")
     
     # 服务器地址
-    server_url = input("服务器地址 (默认: http://localhost:6006): ").strip()
+    server_url = input("服务器地址 (默认: http://localhost:6007): ").strip()
     if not server_url:
-        server_url = "http://localhost:6006"
+        server_url = "http://localhost:6007"
     
     # 扫描目录
     while True:

@@ -13,7 +13,7 @@ from models import (
     TaskResultResponse, PoolStatusResponse, ApiResponse
 )
 from task_manager import task_manager
-from whisper_worker import whisper_worker, start_worker, stop_worker
+from whisper_worker import worker, start_worker, stop_worker
 from utils import ZipFileHandler, FileManager, setup_logging
 from config import config
 
@@ -72,12 +72,12 @@ async def root():
 async def health_check():
     """健康检查"""
     try:
-        worker_health = await whisper_worker.health_check()
+        worker_health = await worker.health_check()
         pool_status = task_manager.get_pool_status()
         
         return {
             "status": "healthy" if worker_health else "unhealthy",
-            "worker_running": whisper_worker.is_running,
+            "worker_running": worker.is_running,
             "pool_status": pool_status.dict(),
             "timestamp": datetime.now().isoformat()
         }
@@ -326,7 +326,7 @@ async def get_stats():
     try:
         pool_status = task_manager.get_pool_status()
         task_counts = task_manager.get_task_count_by_status()
-        worker_status = whisper_worker.get_status()
+        worker_status = worker.get_status()
         
         return {
             "pool_status": pool_status.dict(),
