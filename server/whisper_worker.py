@@ -135,7 +135,6 @@ class WhisperWorker:
                     "--model", model,
                     "--output_dir", temp_output_dir,
                     "--output_format", "srt",
-                    "--language", "auto",  # 自动检测语言
                     "--verbose", "True"    # 增加详细输出
                 ]
                 
