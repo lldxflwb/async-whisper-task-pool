@@ -234,4 +234,66 @@ python main.py --reload
 python api_example.py
 ```
 
-确保有一个名为`example_audio.ogg`的测试音频文件。 
+确保有一个名为`example_audio.ogg`的测试音频文件。
+
+## 客户端使用
+
+项目包含一个完整的客户端应用，位于 `client/` 目录下。
+
+### 客户端功能
+- 自动扫描视频文件目录
+- 使用ffmpeg转换视频为OGG音频
+- 提交转录任务到服务器
+- 获取结果并保存SRT字幕文件
+- 支持多文件并发处理
+
+### 快速使用客户端
+
+1. **进入客户端目录**：
+```bash
+cd client
+```
+
+2. **安装客户端依赖**：
+```bash
+pip install -r requirements.txt
+```
+
+3. **确保ffmpeg已安装**：
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu
+sudo apt install ffmpeg
+```
+
+4. **运行客户端**：
+```bash
+# 交互式运行
+./start_client.sh
+
+# 或直接命令行运行
+python whisper_client.py --scan-dir /path/to/videos
+```
+
+### 客户端示例
+
+```bash
+# 处理指定目录下的所有视频
+python whisper_client.py --scan-dir ~/Videos
+
+# 使用不同模型
+python whisper_client.py --scan-dir ~/Videos --model base
+
+# 处理单个文件
+python whisper_client.py --single ~/Videos/movie.mp4
+
+# 连接远程服务器
+python whisper_client.py \
+  --server http://192.168.1.100:8000 \
+  --scan-dir ~/Videos \
+  --max-workers 3
+```
+
+详细的客户端使用说明请查看 `client/README.md`。 

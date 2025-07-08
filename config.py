@@ -20,7 +20,7 @@ class Config:
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8000"))
     
-    # 安全配置
+    # 安全配置（预留用于将来扩展）
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
     
     # 任务清理配置
