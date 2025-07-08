@@ -1,2 +1,4 @@
 requests>=2.31.0
-pathlib>=1.0.1 
+pathlib>=1.0.1
+argparse
+cryptography>=41.0.0 

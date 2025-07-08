@@ -16,9 +16,55 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
+import zipfile
+import tempfile
+import shutil
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64
 
 # 添加父目录到路径以便导入配置
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+class FileEncryptor:
+    """文件加密器"""
+    
+    @staticmethod
+    def _generate_key(password: str, salt: bytes) -> bytes:
+        """根据密码和盐生成密钥"""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+        return key
+    
+    @staticmethod
+    def encrypt_file(file_path: str, password: str) -> str:
+        """加密文件"""
+        try:
+            salt = os.urandom(16)
+            key = FileEncryptor._generate_key(password, salt)
+            fernet = Fernet(key)
+            
+            with open(file_path, 'rb') as file:
+                file_data = file.read()
+            
+            encrypted_data = fernet.encrypt(file_data)
+            
+            # 将盐和加密数据组合
+            combined_data = salt + encrypted_data
+            
+            encrypted_file_path = file_path + '.enc'
+            with open(encrypted_file_path, 'wb') as file:
+                file.write(combined_data)
+            
+            return encrypted_file_path
+        except Exception as e:
+            raise Exception(f"File encryption failed: {e}")
 
 class WhisperClient:
     """Whisper转录API客户端"""
@@ -27,10 +73,10 @@ class WhisperClient:
         self.server_url = server_url.rstrip('/')
         self.scan_dir = Path(scan_dir)
         self.output_dir = Path(output_dir) if output_dir else self.scan_dir
-        self.password = "whisper_client_" + str(uuid.uuid4())[:8]
+        self.password = "whisper-task-password"  # 任务加密密码
         
         # 支持的视频格式
-        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
+        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.m4v', '.webm'}
         
         # 设置日志
         self._setup_logging()
@@ -148,21 +194,62 @@ class WhisperClient:
                 temp_audio_path.unlink()
             return None
     
-    def submit_task(self, audio_path: Path, model: str = "large-v3-turbo") -> Optional[str]:
-        """提交转录任务"""
-        task_id = str(uuid.uuid4())
-        
+    def create_task_zip(self, audio_path: Path, task_id: str, model: str) -> Optional[Path]:
+        """创建任务压缩包"""
+        try:
+            # 创建临时目录
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 创建metadata
+                metadata = {
+                    "task_id": task_id,
+                    "filename": audio_path.name,
+                    "password": self.password,
+                    "model": model
+                }
+                
+                # 保存metadata到JSON文件
+                metadata_path = os.path.join(temp_dir, 'metadata.json')
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                
+                # 复制音频文件并重命名为audio.ogg
+                audio_dest = os.path.join(temp_dir, 'audio.ogg')
+                shutil.copy2(audio_path, audio_dest)
+                
+                # 创建ZIP文件
+                zip_path = audio_path.with_suffix('.zip')
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(metadata_path, 'metadata.json')
+                    zipf.write(audio_dest, 'audio.ogg')
+                
+                # 加密ZIP文件
+                encrypted_zip_path = FileEncryptor.encrypt_file(str(zip_path), self.password)
+                
+                # 删除原始ZIP文件
+                os.remove(zip_path)
+                
+                # 移动加密文件到最终位置
+                final_zip_path = audio_path.with_suffix('.zip.enc')
+                shutil.move(encrypted_zip_path, final_zip_path)
+                
+                self.logger.info(f"✓ 任务包创建完成: {final_zip_path.name}")
+                return final_zip_path
+                
+        except Exception as e:
+            self.logger.error(f"❌ 创建任务包失败: {e}")
+            return None
+    
+    def submit_task(self, zip_path: Path, task_id: str) -> bool:
+        """提交任务包到服务器"""
         try:
             # 准备表单数据
             data = {
-                'task_id': task_id,
-                'password': self.password,
-                'model': model
+                'task_id': task_id
             }
             
             # 准备文件
-            with open(audio_path, 'rb') as f:
-                files = {'audio_file': ('audio.ogg', f, 'audio/ogg')}
+            with open(zip_path, 'rb') as f:
+                files = {'task_file': (f'{task_id}.zip.enc', f, 'application/octet-stream')}
                 
                 response = requests.post(
                     f"{self.server_url}/tasks/submit",
@@ -174,21 +261,21 @@ class WhisperClient:
             if response.status_code == 200:
                 result = response.json()
                 if result.get('success'):
-                    self.logger.info(f"✓ 任务提交成功: {audio_path.name} -> {task_id}")
-                    return task_id
+                    self.logger.info(f"✓ 任务提交成功: {task_id}")
+                    return True
                 else:
                     self.logger.error(f"❌ 任务提交失败: {result.get('message', '未知错误')}")
-                    return None
+                    return False
             else:
                 self.logger.error(f"❌ 任务提交失败: {response.status_code} - {response.text}")
-                return None
+                return False
                 
         except requests.exceptions.RequestException as e:
             self.logger.error(f"❌ 网络请求失败: {e}")
-            return None
+            return False
         except Exception as e:
             self.logger.error(f"❌ 提交任务异常: {e}")
-            return None
+            return False
     
     def wait_for_result(self, task_id: str, timeout: int = 600) -> Optional[str]:
         """等待任务完成并获取结果"""
@@ -239,17 +326,21 @@ class WhisperClient:
             self.logger.error(f"❌ 保存字幕文件失败: {e}")
             return False
     
-    def cleanup_audio_file(self, audio_path: Path):
-        """清理临时音频文件"""
+    def cleanup_temp_files(self, audio_path: Path, zip_path: Path):
+        """清理临时文件"""
         try:
             if audio_path.exists():
                 audio_path.unlink()
                 self.logger.info(f"清理音频文件: {audio_path.name}")
+            
+            if zip_path.exists():
+                zip_path.unlink()
+                self.logger.info(f"清理任务包: {zip_path.name}")
         except Exception as e:
-            self.logger.warning(f"清理音频文件失败: {e}")
+            self.logger.warning(f"清理临时文件失败: {e}")
     
-    def process_single_video(self, video_path: Path, model: str = "large-v3-turbo", 
-                           keep_audio: bool = False) -> bool:
+    def process_single_video(self, video_path: Path, model: str = "large-v3", 
+                           keep_files: bool = False) -> bool:
         """处理单个视频文件"""
         self.logger.info(f"开始处理: {video_path}")
         
@@ -258,29 +349,36 @@ class WhisperClient:
         if not audio_path:
             return False
         
+        task_id = str(uuid.uuid4())
+        zip_path = None
+        
         try:
-            # 2. 提交任务
-            task_id = self.submit_task(audio_path, model)
-            if not task_id:
+            # 2. 创建任务包
+            zip_path = self.create_task_zip(audio_path, task_id, model)
+            if not zip_path:
                 return False
             
-            # 3. 等待结果
+            # 3. 提交任务
+            if not self.submit_task(zip_path, task_id):
+                return False
+            
+            # 4. 等待结果
             srt_content = self.wait_for_result(task_id)
             if not srt_content:
                 return False
             
-            # 4. 保存字幕文件
+            # 5. 保存字幕文件
             success = self.save_srt_file(video_path, srt_content)
             
             return success
             
         finally:
-            # 5. 清理音频文件（除非指定保留）
-            if not keep_audio:
-                self.cleanup_audio_file(audio_path)
+            # 6. 清理临时文件（除非指定保留）
+            if not keep_files and audio_path and zip_path:
+                self.cleanup_temp_files(audio_path, zip_path)
     
-    def process_all_videos(self, model: str = "large-v3-turbo", 
-                          max_workers: int = 2, keep_audio: bool = False) -> Dict[str, bool]:
+    def process_all_videos(self, model: str = "large-v3", 
+                          max_workers: int = 2, keep_files: bool = False) -> Dict[str, bool]:
         """处理所有视频文件"""
         video_files = self.scan_video_files()
         if not video_files:
@@ -293,7 +391,7 @@ class WhisperClient:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有任务
             future_to_video = {
-                executor.submit(self.process_single_video, video_path, model, keep_audio): video_path
+                executor.submit(self.process_single_video, video_path, model, keep_files): video_path
                 for video_path in video_files
             }
             
@@ -327,12 +425,12 @@ def main():
                        help="要扫描的视频文件目录")
     parser.add_argument("--output-dir", 
                        help="字幕文件输出目录 (默认: 与视频文件同目录)")
-    parser.add_argument("--model", default="large-v3-turbo",
-                       help="Whisper模型 (默认: large-v3-turbo)")
+    parser.add_argument("--model", default="large-v3",
+                       help="Whisper模型 (默认: large-v3)")
     parser.add_argument("--max-workers", type=int, default=2,
                        help="最大并发任务数 (默认: 2)")
-    parser.add_argument("--keep-audio", action="store_true",
-                       help="保留转换的音频文件")
+    parser.add_argument("--keep-files", action="store_true",
+                       help="保留转换的音频和任务包文件")
     parser.add_argument("--single", 
                        help="只处理指定的单个视频文件")
     
@@ -359,7 +457,7 @@ def main():
                 sys.exit(1)
             
             success = client.process_single_video(
-                video_path, args.model, args.keep_audio
+                video_path, args.model, args.keep_files
             )
             
             if success:
@@ -372,7 +470,7 @@ def main():
             results = client.process_all_videos(
                 model=args.model,
                 max_workers=args.max_workers,
-                keep_audio=args.keep_audio
+                keep_files=args.keep_files
             )
             
             if not results:

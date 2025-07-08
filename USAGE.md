@@ -1,299 +1,246 @@
-# Whisper转录API服务使用说明
+# Whisper 转录 API 使用指南
 
-## 项目概述
+## 概述
 
-这是一个基于Whisper的异步音频转录API服务，专为auto-dl等平台设计。服务提供任务池管理、结果缓存、文件加密等功能。
+这是一个基于 Whisper 的异步音频转录服务，支持批量处理视频文件并生成字幕。
 
-## 项目结构
+## 架构说明
 
-```
-WhisperApi/
-├── main.py              # 主服务器入口
-├── api.py              # FastAPI接口定义
-├── models.py           # 数据模型
-├── config.py           # 配置管理
-├── task_manager.py     # 任务池和结果池管理
-├── whisper_worker.py   # Whisper转录工作器
-├── utils.py            # 工具函数（文件处理、加密等）
-├── requirements.txt    # Python依赖
-├── start_server.sh     # 启动脚本
-├── api_example.py      # API使用示例
-├── .gitignore          # Git忽略文件
-└── USAGE.md           # 使用说明
-```
+### 交互流程
 
-## 安装依赖
+1. **客户端**：扫描视频文件 → 转换为音频 → 创建加密压缩包 → 上传到服务器
+2. **服务端**：接收压缩包 → 解压获取音频 → 使用 Whisper 转录 → 返回 SRT 字幕
+3. **客户端**：轮询获取结果 → 保存字幕文件 → 清理临时文件
 
-1. 激活Python环境：
+### 文件格式
+
+- **音频格式**：统一转换为 OGG 格式 (16kHz, 单声道, 24k比特率)
+- **压缩包**：加密的 ZIP 文件，包含音频文件和任务元数据
+- **字幕格式**：SRT 格式
+
+## 服务端部署
+
+### 1. 环境准备
+
 ```bash
+# 激活 Python 环境
 source ~/Documents/envs/ai/bin/activate
-```
 
-2. 安装依赖：
-```bash
+# 安装依赖
+cd server
 pip install -r requirements.txt
 ```
 
-## 启动服务
+### 2. 配置环境变量
 
-### 方式1：使用启动脚本
-```bash
-./start_server.sh
-```
+创建 `.env` 文件：
 
-### 方式2：直接运行Python
-```bash
-python main.py
-```
-
-### 方式3：自定义参数
-```bash
-python main.py --host 0.0.0.0 --port 8000 --log-level info
-```
-
-## 环境变量配置
-
-创建`.env`文件（可选）：
 ```bash
 # 任务池配置
 MAX_TASK_POOL_SIZE=5
 
-# 文件存储配置
+# 目录配置
 UPLOAD_DIR=uploads
 RESULT_DIR=results
 TEMP_DIR=temp
 
-# Whisper配置
-WHISPER_MODEL=large-v3-turbo
+# Whisper 配置
+WHISPER_MODEL=large-v3
 
 # 服务器配置
 HOST=0.0.0.0
-PORT=8000
+PORT=6006
 
-# 安全配置
-SECRET_KEY=your-secret-key-here
-
-# 任务清理配置（小时）
+# 结果保留时间（小时）
 RESULT_RETENTION_HOURS=24
 ```
 
-## API接口说明
+### 3. 启动服务
+
+```bash
+# 使用启动脚本
+./start_server.sh
+
+# 或直接运行
+python main.py
+```
+
+## 客户端使用
+
+### 1. 安装依赖
+
+```bash
+cd client
+pip install -r requirements.txt
+```
+
+### 2. 配置客户端
+
+编辑 `run_client.py` 或直接使用命令行：
+
+```bash
+python whisper_client.py \
+    --server-url http://localhost:6006 \
+    --scan-dir /path/to/video/directory \
+    --model large-v3 \
+    --max-workers 2
+```
+
+### 3. 批量处理
+
+```bash
+# 交互式运行
+python run_client.py
+
+# 命令行运行
+python whisper_client.py \
+    --server-url http://your-server:6006 \
+    --scan-dir /path/to/videos \
+    --model large-v3 \
+    --max-workers 2 \
+    --keep-files  # 保留临时文件
+```
+
+### 4. 单个文件处理
+
+```bash
+python whisper_client.py \
+    --server-url http://localhost:6006 \
+    --scan-dir /path/to/video/directory \
+    --single /path/to/video.mp4 \
+    --model large-v3
+```
+
+## API 接口
 
 ### 健康检查
+
 ```bash
 GET /health
 ```
 
-### 任务池状态
-```bash
-GET /pool/status
-```
-返回：
-```json
-{
-  "is_full": false,
-  "current_size": 0,
-  "max_size": 5,
-  "processing_count": 0
-}
-```
-
 ### 提交任务
+
 ```bash
 POST /tasks/submit
+Content-Type: multipart/form-data
+
+Parameters:
+- task_id: string (任务ID)
+- task_file: file (加密的ZIP文件)
 ```
-表单数据：
-- `task_id`: 任务ID（UUID）
-- `password`: 解压密码
-- `model`: 使用的模型（默认：large-v3-turbo）
-- `audio_file`: 音频文件（OGG格式）
 
 ### 获取任务状态
+
 ```bash
 GET /tasks/{task_id}/status
 ```
 
 ### 获取任务结果
+
 ```bash
 GET /tasks/{task_id}/result
 ```
 
-### 下载结果文件
+### 下载字幕文件
+
 ```bash
 GET /tasks/{task_id}/result/download
 ```
 
-### 清除任务结果
-```bash
-DELETE /tasks/{task_id}/result
-```
+## 支持的模型
 
-### 取消任务
-```bash
-DELETE /tasks/{task_id}
-```
+- `tiny`, `tiny.en`
+- `base`, `base.en`
+- `small`, `small.en`
+- `medium`, `medium.en`
+- `large-v1`, `large-v2`, `large-v3`
+- `large`
 
-## 使用示例
+## 支持的视频格式
 
-### 1. 基本使用流程
+- MP4 (.mp4)
+- AVI (.avi)
+- MKV (.mkv)
+- MOV (.mov)
+- WMV (.wmv)
+- FLV (.flv)
+- M4V (.m4v)
+- WEBM (.webm)
 
-1. 检查服务器状态
-2. 检查任务池是否满
-3. 提交任务
-4. 轮询任务状态/结果
-5. 下载结果文件
-6. 清除结果（可选）
+## 配置说明
 
-### 2. 客户端示例
+### 服务端配置
 
-参考`api_example.py`文件，它展示了完整的客户端使用流程。
+- `MAX_TASK_POOL_SIZE`: 最大任务池大小（默认5）
+- `WHISPER_MODEL`: 默认 Whisper 模型
+- `RESULT_RETENTION_HOURS`: 结果保留时间（小时）
 
-### 3. cURL示例
+### 客户端配置
 
-```bash
-# 检查健康状态
-curl http://localhost:8000/health
-
-# 提交任务
-curl -X POST http://localhost:8000/tasks/submit \
-  -F "task_id=12345678-1234-1234-1234-123456789012" \
-  -F "password=test123" \
-  -F "model=large-v3-turbo" \
-  -F "audio_file=@audio.ogg"
-
-# 获取任务状态
-curl http://localhost:8000/tasks/12345678-1234-1234-1234-123456789012/status
-
-# 获取结果
-curl http://localhost:8000/tasks/12345678-1234-1234-1234-123456789012/result
-
-# 下载结果文件
-curl http://localhost:8000/tasks/12345678-1234-1234-1234-123456789012/result/download -o result.srt
-```
-
-## 交互流程
-
-1. **客户端**通过表单直接上传音频文件到服务器
-2. **服务器**创建加密压缩包，将任务放入任务池，返回确认
-3. **客户端**轮询获取任务结果
-4. **服务器**单线程执行转录任务
-5. **任务完成**后，结果放入结果池，清理任务文件
-
-## 文件格式要求
-
-- 音频文件必须是OGG格式
-- 文件名必须是`audio.ogg`
-- 压缩包包含metadata.json和audio.ogg
-- 压缩包使用密码加密
-
-## 注意事项
-
-1. 任务池大小限制（默认5个）
-2. 结果会在24小时后自动清理
-3. 相同task_id的新任务会覆盖旧任务
-4. 支持的Whisper模型：base, small, medium, large-v1, large-v2, large-v3-turbo
-5. 服务器单线程处理任务，确保系统资源合理使用
+- `--max-workers`: 并发处理数量（默认2）
+- `--keep-files`: 保留临时文件（调试用）
+- `--model`: 指定 Whisper 模型
 
 ## 故障排除
 
-### 常见问题
-
-1. **Whisper未安装**
-   ```bash
-   pip install openai-whisper
-   ```
-
-2. **端口被占用**
-   ```bash
-   python main.py --port 8001
-   ```
-
-3. **权限问题**
-   ```bash
-   chmod +x start_server.sh
-   ```
-
-4. **依赖问题**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### 日志查看
-
-服务器日志会输出到控制台和`whisper_api.log`文件。
-
-## 开发和测试
-
-### 开发模式启动
-```bash
-python main.py --reload
-```
-
-### 测试API
-```bash
-python api_example.py
-```
-
-确保有一个名为`example_audio.ogg`的测试音频文件。
-
-## 客户端使用
-
-项目包含一个完整的客户端应用，位于 `client/` 目录下。
-
-### 客户端功能
-- 自动扫描视频文件目录
-- 使用ffmpeg转换视频为OGG音频
-- 提交转录任务到服务器
-- 获取结果并保存SRT字幕文件
-- 支持多文件并发处理
-
-### 快速使用客户端
-
-1. **进入客户端目录**：
-```bash
-cd client
-```
-
-2. **安装客户端依赖**：
-```bash
-pip install -r requirements.txt
-```
-
-3. **确保ffmpeg已安装**：
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu
-sudo apt install ffmpeg
-```
-
-4. **运行客户端**：
-```bash
-# 交互式运行
-./start_client.sh
-
-# 或直接命令行运行
-python whisper_client.py --scan-dir /path/to/videos
-```
-
-### 客户端示例
+### 1. 服务端问题
 
 ```bash
-# 处理指定目录下的所有视频
-python whisper_client.py --scan-dir ~/Videos
+# 检查 Whisper 安装
+whisper --help
 
-# 使用不同模型
-python whisper_client.py --scan-dir ~/Videos --model base
+# 检查服务器日志
+tail -f whisper_api.log
 
-# 处理单个文件
-python whisper_client.py --single ~/Videos/movie.mp4
-
-# 连接远程服务器
-python whisper_client.py \
-  --server http://192.168.1.100:8000 \
-  --scan-dir ~/Videos \
-  --max-workers 3
+# 测试 Whisper 命令
+python test_whisper.py /path/to/audio.ogg
 ```
 
-详细的客户端使用说明请查看 `client/README.md`。 
+### 2. 客户端问题
+
+```bash
+# 检查 ffmpeg 安装
+ffmpeg -version
+
+# 检查服务器连接
+curl http://localhost:6006/health
+
+# 调试模式运行
+python whisper_client.py --keep-files ...
+```
+
+### 3. 常见错误
+
+- **"No SRT file generated"**: 检查音频文件是否为空或损坏
+- **"Task pool is full"**: 等待任务完成或增加任务池大小
+- **"ffmpeg not found"**: 安装 ffmpeg
+- **"Connection refused"**: 检查服务器是否运行
+
+## 性能优化
+
+### 服务端优化
+
+- 使用 SSD 存储
+- 增加内存容量
+- 根据 CPU 核心数调整任务池大小
+
+### 客户端优化
+
+- 调整 `--max-workers` 参数
+- 使用本地网络减少延迟
+- 批量处理相同目录的文件
+
+## 安全说明
+
+- 任务文件使用 PBKDF2 + Fernet 加密
+- 密码固定为 `whisper-task-password`
+- 结果文件自动清理
+- 临时文件安全删除
+
+## 日志和监控
+
+- 服务端日志：`whisper_api.log`
+- 客户端日志：控制台输出
+- 任务状态：通过 API 查询
+- 系统状态：`/health` 端点 

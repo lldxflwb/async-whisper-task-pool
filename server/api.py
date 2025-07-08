@@ -97,9 +97,7 @@ async def get_pool_status():
 @app.post("/tasks/submit", response_model=ApiResponse)
 async def submit_task(
     task_id: str = Form(...),
-    password: str = Form(...),
-    model: str = Form(default="large-v3-turbo"),
-    audio_file: UploadFile = File(...)
+    task_file: UploadFile = File(...)
 ):
     """提交任务到任务池"""
     try:
@@ -107,33 +105,46 @@ async def submit_task(
         if task_manager.is_pool_full():
             raise HTTPException(status_code=429, detail="Task pool is full")
         
-        # 验证音频文件
-        if not audio_file.filename.endswith('.ogg'):
+        # 验证任务文件
+        if not task_file.filename.endswith('.zip.enc'):
             raise HTTPException(
                 status_code=400, 
-                detail="Audio file must be in OGG format"
+                detail="Task file must be encrypted zip format (.zip.enc)"
             )
         
-        # 保存上传的音频文件
-        temp_audio_path = None
+        # 保存上传的任务文件
+        zip_file_path = os.path.join(config.UPLOAD_DIR, f"{task_id}.zip.enc")
+        
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
-                temp_audio_path = temp_file.name
-                content = await audio_file.read()
-                temp_file.write(content)
+            with open(zip_file_path, 'wb') as f:
+                content = await task_file.read()
+                f.write(content)
             
-            # 创建任务元数据
-            metadata = TaskMetadata(
-                task_id=task_id,
-                filename=audio_file.filename,
-                password=password,
-                model=model
-            )
-            
-            # 创建加密压缩文件
-            zip_file_path = ZipFileHandler.create_task_zip(
-                metadata, temp_audio_path, password
-            )
+            # 解压并验证任务文件，获取metadata
+            try:
+                extracted_data = ZipFileHandler.extract_task_zip(
+                    zip_file_path, 
+                    "whisper-task-password"  # 固定密码
+                )
+                metadata_dict = extracted_data['metadata']
+                
+                # 创建任务元数据对象
+                metadata = TaskMetadata(
+                    task_id=metadata_dict['task_id'],
+                    filename=metadata_dict['filename'],
+                    password=metadata_dict['password'],
+                    model=metadata_dict['model']
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to extract task metadata: {e}")
+                # 清理上传的文件
+                if os.path.exists(zip_file_path):
+                    os.remove(zip_file_path)
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid task file format or encryption"
+                )
             
             # 创建任务
             task = Task(
@@ -150,12 +161,16 @@ async def submit_task(
                     data={"task_id": task_id}
                 )
             else:
+                # 清理上传的文件
+                if os.path.exists(zip_file_path):
+                    os.remove(zip_file_path)
                 raise HTTPException(status_code=500, detail="Failed to add task to pool")
                 
-        finally:
-            # 清理临时音频文件
-            if temp_audio_path and os.path.exists(temp_audio_path):
-                os.unlink(temp_audio_path)
+        except Exception as e:
+            # 清理上传的文件
+            if os.path.exists(zip_file_path):
+                os.remove(zip_file_path)
+            raise e
                 
     except HTTPException:
         raise
