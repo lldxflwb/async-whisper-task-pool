@@ -3,10 +3,10 @@ import logging
 import os
 import tempfile
 import shutil
+import subprocess
 from typing import Optional
 from datetime import datetime
 import torch
-import whisper
 from models import Task, TaskStatus
 from task_manager import task_manager
 from utils import ZipFileHandler, FileManager
@@ -20,8 +20,6 @@ class WhisperWorker:
     def __init__(self):
         self.is_running = False
         self._worker_task = None
-        self._model = None
-        self._current_model_name = None
         # 设置CPU线程数
         self._setup_cpu_threads()
     
@@ -33,13 +31,15 @@ class WhisperWorker:
         # 设置PyTorch线程数
         torch.set_num_threads(cpu_threads)
         
-        # 也可以通过环境变量设置OpenMP线程数
+        # 设置OpenMP线程数（用于numpy等库）
         os.environ['OMP_NUM_THREADS'] = str(cpu_threads)
+        
+        # 设置MKL线程数（Intel Math Kernel Library）
         os.environ['MKL_NUM_THREADS'] = str(cpu_threads)
         
-        # 验证设置
-        actual_threads = torch.get_num_threads()
-        logger.info(f"PyTorch is using {actual_threads} CPU threads")
+        logger.info(f"CPU threads configured: PyTorch={torch.get_num_threads()}, "
+                   f"OMP={os.environ.get('OMP_NUM_THREADS')}, "
+                   f"MKL={os.environ.get('MKL_NUM_THREADS')}")
     
     async def start(self):
         """启动工作器"""
@@ -47,19 +47,24 @@ class WhisperWorker:
             logger.warning("Worker is already running")
             return
         
-        # 预加载默认模型
-        await self._load_model(config.WHISPER_MODEL)
-        
+        logger.info("Starting Whisper worker...")
         self.is_running = True
+        
+        # 启动工作器循环
         self._worker_task = asyncio.create_task(self._worker_loop())
+        
         logger.info("Whisper worker started")
     
     async def stop(self):
         """停止工作器"""
         if not self.is_running:
+            logger.warning("Worker is not running")
             return
         
+        logger.info("Stopping Whisper worker...")
         self.is_running = False
+        
+        # 取消工作器任务
         if self._worker_task:
             self._worker_task.cancel()
             try:
@@ -67,31 +72,7 @@ class WhisperWorker:
             except asyncio.CancelledError:
                 pass
         
-        # 清理模型
-        self._model = None
-        self._current_model_name = None
         logger.info("Whisper worker stopped")
-    
-    async def _load_model(self, model_name: str):
-        """加载Whisper模型"""
-        if self._current_model_name == model_name and self._model is not None:
-            logger.info(f"Model {model_name} already loaded")
-            return
-        
-        logger.info(f"Loading Whisper model: {model_name}")
-        try:
-            # 在线程池中加载模型，避免阻塞事件循环
-            loop = asyncio.get_event_loop()
-            self._model = await loop.run_in_executor(
-                None, 
-                whisper.load_model, 
-                model_name
-            )
-            self._current_model_name = model_name
-            logger.info(f"Successfully loaded model: {model_name}")
-        except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {e}")
-            raise
     
     async def _worker_loop(self):
         """工作器主循环"""
@@ -159,7 +140,7 @@ class WhisperWorker:
             # 注意：ZIP文件的清理由task_manager处理
     
     async def _transcribe_audio(self, audio_path: str, model: str) -> str:
-        """使用Whisper转录音频"""
+        """使用Whisper命令行转录音频"""
         logger.info(f"Transcribing audio: {audio_path} with model: {model}")
         
         try:
@@ -174,62 +155,69 @@ class WhisperWorker:
             if file_size == 0:
                 raise ValueError("Audio file is empty")
             
-            # 如果需要不同的模型，重新加载
-            await self._load_model(model)
+            # 准备输出目录
+            output_dir = os.path.dirname(audio_path)
+            audio_name = os.path.splitext(os.path.basename(audio_path))[0]
+            srt_path = os.path.join(output_dir, f"{audio_name}.srt")
             
-            logger.info(f"Using CPU threads: {torch.get_num_threads()}")
+            # 构建whisper命令行参数
+            cmd = [
+                "whisper",
+                audio_path,
+                "--model", model,
+                "--threads", str(config.WHISPER_CPU_THREADS),
+                "--output_format", "srt",
+                "--output_dir", output_dir,
+                "--verbose", "False"
+            ]
             
-            # 在线程池中进行转录，避免阻塞事件循环
+            logger.info(f"Executing command: {' '.join(cmd)}")
+            logger.info(f"Using CPU threads: {config.WHISPER_CPU_THREADS}")
+            
+            # 在线程池中执行命令行，避免阻塞事件循环
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, 
-                self._model.transcribe, 
-                audio_path
+                lambda: subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    check=True,
+                    cwd=output_dir
+                )
             )
             
-            # 将结果转换为SRT格式
-            srt_content = self._result_to_srt(result)
+            logger.info(f"Whisper command completed. Return code: {result.returncode}")
+            if result.stdout:
+                logger.info(f"Whisper stdout: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"Whisper stderr: {result.stderr}")
+            
+            # 读取生成的SRT文件
+            if not os.path.exists(srt_path):
+                raise FileNotFoundError(f"Expected SRT file not found: {srt_path}")
+            
+            with open(srt_path, 'r', encoding='utf-8') as f:
+                srt_content = f.read()
+            
+            # 清理生成的SRT文件（可选，取决于你是否想保留）
+            try:
+                os.remove(srt_path)
+                logger.info(f"Cleaned up SRT file: {srt_path}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup SRT file: {e}")
             
             logger.info(f"Transcription completed, SRT length: {len(srt_content)} characters")
             return srt_content
                 
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Whisper command failed: {e}")
+            logger.error(f"Command stdout: {e.stdout}")
+            logger.error(f"Command stderr: {e.stderr}")
+            raise RuntimeError(f"Whisper transcription failed: {e.stderr}")
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             raise
-    
-    def _result_to_srt(self, result: dict) -> str:
-        """将whisper结果转换为SRT格式"""
-        srt_lines = []
-        
-        # 如果结果中包含segments，使用segments
-        if 'segments' in result:
-            for i, segment in enumerate(result['segments']):
-                start_time = self._format_time(segment['start'])
-                end_time = self._format_time(segment['end'])
-                text = segment['text'].strip()
-                
-                srt_lines.append(f"{i + 1}")
-                srt_lines.append(f"{start_time} --> {end_time}")
-                srt_lines.append(text)
-                srt_lines.append("")  # 空行分隔
-        else:
-            # 如果没有segments，创建一个简单的SRT
-            srt_lines.append("1")
-            srt_lines.append("00:00:00,000 --> 00:00:10,000")
-            srt_lines.append(result.get('text', '').strip())
-            srt_lines.append("")
-        
-        return "\n".join(srt_lines)
-    
-    def _format_time(self, seconds: float) -> str:
-        """将秒数格式化为SRT时间格式"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        seconds = seconds % 60
-        milliseconds = int((seconds % 1) * 1000)
-        seconds = int(seconds)
-        
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
     
     async def health_check(self) -> bool:
         """健康检查"""
@@ -238,10 +226,7 @@ class WhisperWorker:
             if not self.is_running:
                 return False
             
-            # 检查模型是否已加载
-            if self._model is None:
-                return False
-            
+            # 由于现在使用命令行，不再需要检查模型加载状态
             return True
             
         except Exception as e:
@@ -252,10 +237,9 @@ class WhisperWorker:
         """获取工作器状态"""
         return {
             "is_running": self.is_running,
-            "model_loaded": self._model is not None,
-            "current_model": self._current_model_name,
             "worker_task_running": self._worker_task is not None and not self._worker_task.done(),
-            "cpu_threads": torch.get_num_threads()
+            "cpu_threads": torch.get_num_threads(),
+            "transcription_method": "command_line"
         }
 
 # 全局工作器实例
