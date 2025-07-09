@@ -5,6 +5,7 @@ import tempfile
 import shutil
 from typing import Optional
 from datetime import datetime
+import torch
 import whisper
 from models import Task, TaskStatus
 from task_manager import task_manager
@@ -21,6 +22,24 @@ class WhisperWorker:
         self._worker_task = None
         self._model = None
         self._current_model_name = None
+        # 设置CPU线程数
+        self._setup_cpu_threads()
+    
+    def _setup_cpu_threads(self):
+        """设置CPU线程数"""
+        cpu_threads = config.WHISPER_CPU_THREADS
+        logger.info(f"Setting PyTorch CPU threads to: {cpu_threads}")
+        
+        # 设置PyTorch线程数
+        torch.set_num_threads(cpu_threads)
+        
+        # 也可以通过环境变量设置OpenMP线程数
+        os.environ['OMP_NUM_THREADS'] = str(cpu_threads)
+        os.environ['MKL_NUM_THREADS'] = str(cpu_threads)
+        
+        # 验证设置
+        actual_threads = torch.get_num_threads()
+        logger.info(f"PyTorch is using {actual_threads} CPU threads")
     
     async def start(self):
         """启动工作器"""
@@ -158,6 +177,8 @@ class WhisperWorker:
             # 如果需要不同的模型，重新加载
             await self._load_model(model)
             
+            logger.info(f"Using CPU threads: {torch.get_num_threads()}")
+            
             # 在线程池中进行转录，避免阻塞事件循环
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -233,7 +254,8 @@ class WhisperWorker:
             "is_running": self.is_running,
             "model_loaded": self._model is not None,
             "current_model": self._current_model_name,
-            "worker_task_running": self._worker_task is not None and not self._worker_task.done()
+            "worker_task_running": self._worker_task is not None and not self._worker_task.done(),
+            "cpu_threads": torch.get_num_threads()
         }
 
 # 全局工作器实例

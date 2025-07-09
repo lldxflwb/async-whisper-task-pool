@@ -15,6 +15,8 @@ class Config:
     
     # Whisper配置
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
+    # CPU线程数配置
+    WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "4"))
     
     # 服务器配置
     HOST = os.getenv("HOST", "0.0.0.0")
@@ -29,8 +31,9 @@ class Config:
     @classmethod
     def ensure_directories(cls):
         """确保必要的目录存在"""
-        for dir_path in [cls.UPLOAD_DIR, cls.RESULT_DIR, cls.TEMP_DIR]:
-            os.makedirs(dir_path, exist_ok=True)
+        for directory in [cls.UPLOAD_DIR, cls.RESULT_DIR, cls.TEMP_DIR]:
+            if not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
 
 # 全局配置实例
 config = Config() 
