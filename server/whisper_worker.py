@@ -154,45 +154,50 @@ class WhisperWorker:
             with tempfile.TemporaryDirectory() as temp_output_dir:
                 # 构建whisper命令
                 cmd = [
-                    'whisper',
-                    audio_path,
-                    '--model', model,
-                    '--output_format', 'srt',
-                    '--output_dir', temp_output_dir,
-                ]
-                
-                logger.info(f"Running whisper command: {' '.join(cmd)}")
-                
-                # 在进程中执行whisper命令
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                stdout, stderr = await process.communicate()
-                
-                if process.returncode != 0:
-                    error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
-                    logger.error(f"Whisper command failed: {error_msg}")
-                    raise RuntimeError(f"Whisper command failed: {error_msg}")
-                
-                # 查找生成的SRT文件
-                srt_file = None
-                for file in os.listdir(temp_output_dir):
-                    if file.endswith('.srt'):
-                        srt_file = os.path.join(temp_output_dir, file)
-                        break
-                
-                if not srt_file or not os.path.exists(srt_file):
-                    raise RuntimeError("SRT file not generated")
-                
-                # 读取SRT内容
-                with open(srt_file, 'r', encoding='utf-8') as f:
+                'whisper', 
+                audio_path,
+                '--model', model,
+                '--output_dir', output_dir,
+                '--output_format', 'srt',
+                '--language', 'auto', # 自动检测语言
+            ]
+            
+            logger.info(f"Running Whisper command: {' '.join(cmd)}")
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Read stderr in real-time
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                logger.info(f"Whisper STDOUT/STDERR: {line.decode().strip()}")
+
+            # Wait for the process to finish
+            await process.wait()
+            
+            if process.returncode != 0:
+                error_message = f"Whisper command failed with exit code {process.returncode}."
+                logger.error(error_message)
+                return None
+            
+            # 查找生成的SRT文件
+            # Whisper会以音频文件名命名SRT文件
+            base_name = os.path.splitext(os.path.basename(audio_path))[0]
+            srt_file_path = os.path.join(output_dir, f"{base_name}.srt")
+            
+            if os.path.exists(srt_file_path):
+                with open(srt_file_path, 'r', encoding='utf-8') as f:
                     srt_content = f.read()
-                
-                logger.info(f"Transcription completed, SRT length: {len(srt_content)} characters")
+                logger.info(f"Whisper transcription successful. SRT content length: {len(srt_content)}")
                 return srt_content
+            else:
+                logger.error(f"SRT file not found after Whisper execution: {srt_file_path}")
+                return None
                 
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
