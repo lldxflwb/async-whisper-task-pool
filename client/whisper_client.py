@@ -3,12 +3,10 @@
 Whisper转录API客户端
 自动扫描视频文件，转换为音频并提交转录任务
 
-处理策略：
-- 串行处理：主线程一个文件一个文件地转录、压缩
-- 检查空闲：每次提交前检查服务端任务池状态
-- 等待空闲：如果任务池满则等待5秒后重试
-- 后台等待：提交成功后在新线程中等待结果
-- 程序退出：等待所有线程完成后才退出
+智能轮询策略：
+- 处理中的任务：每5秒查询一次状态
+- 队列中的任务：每15秒查询一次状态
+- 可通过命令行参数自定义轮询间隔
 """
 
 import os
@@ -21,8 +19,7 @@ import requests
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
-import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import zipfile
 import tempfile
@@ -78,7 +75,7 @@ class WhisperClient:
     """Whisper转录API客户端"""
     
     def __init__(self, server_url: str, scan_dir: str, output_dir: Optional[str] = None,
-                 pending_poll_interval: int = 30, processing_poll_interval: int = 10):
+                 pending_poll_interval: int = 15, processing_poll_interval: int = 5):
         self.server_url = server_url.rstrip('/')
         self.scan_dir = Path(scan_dir)
         self.output_dir = Path(output_dir) if output_dir else self.scan_dir
@@ -467,127 +464,37 @@ class WhisperClient:
                 self.logger.info(f"步骤6: 清理临时文件")
                 self.cleanup_temp_files(audio_path, zip_path)
     
-    def check_server_pool_status(self) -> bool:
-        """检查服务器任务池是否有空闲"""
-        try:
-            response = requests.get(f"{self.server_url}/pool/status", timeout=10)
-            if response.status_code == 200:
-                pool_status = response.json()
-                return not pool_status.get('is_full', True)
-            else:
-                self.logger.warning(f"获取任务池状态失败: {response.status_code}")
-                return False
-        except requests.exceptions.RequestException as e:
-            self.logger.warning(f"检查任务池状态时网络错误: {e}")
-            return False
-
-    def wait_for_single_result(self, task_id: str, video_path: Path, audio_path: Path, 
-                              zip_path: Path, keep_files: bool, results: Dict, results_lock: threading.Lock):
-        """在新线程中等待单个任务的结果"""
-        try:
-            self.logger.info(f"开始等待任务结果: {video_path.name} (任务ID: {task_id})")
-            srt_content = self.wait_for_result(task_id)
-            
-            if srt_content:
-                # 保存字幕文件
-                success = self.save_srt_file(video_path, srt_content)
-                with results_lock:  # 线程安全地更新结果
-                    if success:
-                        self.logger.info(f"✅ 任务完成: {video_path.name}")
-                        results[str(video_path)] = True
-                    else:
-                        self.logger.error(f"❌ 字幕文件保存失败: {video_path.name}")
-                        results[str(video_path)] = False
-            else:
-                with results_lock:  # 线程安全地更新结果
-                    self.logger.error(f"❌ 获取转录结果失败: {video_path.name}")
-                    results[str(video_path)] = False
-            
-        except Exception as e:
-            with results_lock:  # 线程安全地更新结果
-                self.logger.error(f"❌ 等待任务结果时发生异常: {video_path.name}, 错误: {e}")
-                results[str(video_path)] = False
-        finally:
-            # 清理临时文件
-            if not keep_files:
-                self.cleanup_temp_files(audio_path, zip_path)
-
-    def process_all_videos(self, model: str = "large-v3", keep_files: bool = False) -> Dict[str, bool]:
-        """处理所有视频文件（串行提交，后台等待结果）"""
+    def process_all_videos(self, model: str = "large-v3", 
+                          max_workers: int = 2, keep_files: bool = False) -> Dict[str, bool]:
+        """处理所有视频文件"""
         video_files = self.scan_video_files()
         if not video_files:
             self.logger.info("没有找到需要处理的视频文件")
             return {}
         
         results = {}
-        result_threads = []  # 存储等待结果的线程
-        results_lock = threading.Lock()  # 保护results字典的线程锁
         
         try:
-            # 串行处理每个文件
-            for i, video_path in enumerate(video_files, 1):
-                self.logger.info(f"开始处理第 {i}/{len(video_files)} 个文件: {video_path.name}")
+            # 使用线程池处理多个文件
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                future_to_video = {
+                    executor.submit(self.process_single_video, video_path, model, keep_files): video_path
+                    for video_path in video_files
+                }
                 
-                try:
-                    # 1. 转换为音频
-                    self.logger.info(f"步骤1: 转换视频为音频 ({i}/{len(video_files)})")
-                    audio_path = self.convert_to_audio(video_path)
-                    if not audio_path:
-                        self.logger.error(f"音频转换失败: {video_path}")
+                # 等待任务完成
+                for future in future_to_video:
+                    video_path = future_to_video[future]
+                    try:
+                        success = future.result()
+                        results[str(video_path)] = success
+                        status = "✓" if success else "❌"
+                        self.logger.info(f"{status} {video_path.name}: {'成功' if success else '失败'}")
+                    except Exception as e:
+                        self.logger.error(f"❌ 处理 {video_path.name} 时发生异常: {e}")
                         results[str(video_path)] = False
-                        continue
-                    
-                    # 2. 创建任务包
-                    task_id = str(uuid.uuid4())
-                    self.logger.info(f"步骤2: 创建任务包 ({i}/{len(video_files)})")
-                    zip_path = self.create_task_zip(audio_path, task_id, model)
-                    if not zip_path:
-                        self.logger.error(f"任务包创建失败: {video_path}")
-                        if audio_path.exists():
-                            audio_path.unlink()
-                        results[str(video_path)] = False
-                        continue
-                    
-                    # 3. 等待服务器有空闲槽位
-                    self.logger.info(f"步骤3: 检查服务器任务池状态 ({i}/{len(video_files)})")
-                    while not self.check_server_pool_status():
-                        sleep_time = 60
-                        self.logger.info(f"服务器任务池已满，等待{sleep_time}秒后重试...")
-                        time.sleep(sleep_time)
-                    
-                    # 4. 提交任务
-                    self.logger.info(f"步骤4: 提交任务到服务器 ({i}/{len(video_files)})")
-                    if not self.submit_task(zip_path, task_id):
-                        self.logger.error(f"任务提交失败: {video_path}")
-                        if not keep_files:
-                            self.cleanup_temp_files(audio_path, zip_path)
-                        results[str(video_path)] = False
-                        continue
-                    
-                    # 5. 在新线程中等待结果
-                    self.logger.info(f"✅ 第 {i}/{len(video_files)} 个文件已提交: {video_path.name} (任务ID: {task_id})")
-                    thread = threading.Thread(
-                        target=self.wait_for_single_result,
-                        args=(task_id, video_path, audio_path, zip_path, keep_files, results, results_lock)
-                    )
-                    thread.daemon = False  # 不是守护线程，确保主程序等待
-                    thread.start()
-                    result_threads.append(thread)
-                    
-                    self.logger.info(f"📊 当前进度: 已提交 {i}/{len(video_files)}, 等待中 {len(result_threads)}")
-                    
-                except Exception as e:
-                    self.logger.error(f"❌ 处理 {video_path.name} 时发生异常: {e}")
-                    results[str(video_path)] = False
-            
-            # 等待所有结果线程完成
-            self.logger.info(f"所有任务已提交，等待 {len(result_threads)} 个任务完成...")
-            for i, thread in enumerate(result_threads, 1):
-                self.logger.info(f"等待第 {i}/{len(result_threads)} 个任务完成...")
-                thread.join()
-            
-            self.logger.info("✅ 所有任务处理完成")
-            
+        
         finally:
             # 清理临时目录（除非指定保留）
             if not keep_files:
@@ -598,7 +505,7 @@ class WhisperClient:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description="Whisper转录客户端 - 串行提交，后台等待：检查服务端空闲后提交，新线程等待结果"
+        description="Whisper转录客户端 - 智能轮询：处理中任务5秒轮询，队列中任务15秒轮询"
     )
     parser.add_argument("--server", default="http://localhost:6007", 
                        help="Whisper API服务器地址 (默认: http://localhost:6007)")
@@ -608,13 +515,15 @@ def main():
                        help="字幕文件输出目录 (默认: 与视频文件同目录)")
     parser.add_argument("--model", default="large-v3",
                        help="Whisper模型 (默认: large-v3)")
+    parser.add_argument("--max-workers", type=int, default=2,
+                       help="最大并发任务数 (默认: 2)")
     parser.add_argument("--keep-files", action="store_true",
                        help="保留转换的音频和任务包文件")
     parser.add_argument("--single", 
                        help="只处理指定的单个视频文件")
-    parser.add_argument("--pending-poll-interval", type=int, default=60,
+    parser.add_argument("--pending-poll-interval", type=int, default=15,
                        help="队列中任务的轮询间隔(秒) (默认: 15)")
-    parser.add_argument("--processing-poll-interval", type=int, default=15,
+    parser.add_argument("--processing-poll-interval", type=int, default=5,
                        help="处理中任务的轮询间隔(秒) (默认: 5)")
     
     args = parser.parse_args()
@@ -654,6 +563,7 @@ def main():
             # 处理所有文件
             results = client.process_all_videos(
                 model=args.model,
+                max_workers=args.max_workers,
                 keep_files=args.keep_files
             )
             

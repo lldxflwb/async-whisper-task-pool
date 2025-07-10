@@ -7,7 +7,7 @@
 ✅ **自动扫描** - 递归扫描指定目录下的视频文件  
 ✅ **智能跳过** - 自动跳过已有字幕的视频文件  
 ✅ **格式转换** - 使用ffmpeg转换视频为OGG音频格式  
-✅ **串行提交，后台等待** - 检查服务端空闲后提交，新线程等待结果  
+✅ **并发处理** - 支持多文件并发处理，提高效率  
 ✅ **智能轮询** - 处理中任务5秒轮询，队列中任务15秒轮询  
 ✅ **进度跟踪** - 实时显示处理进度和状态  
 ✅ **错误恢复** - 单个文件失败不影响其他文件处理  
@@ -68,6 +68,7 @@ python whisper_client.py [选项]
   --server URL          Whisper API服务器地址 (默认: http://localhost:8000)
   --output-dir DIR      字幕文件输出目录 (默认: 与视频文件同目录)
   --model MODEL         Whisper模型 (默认: large-v3-turbo)
+  --max-workers N       最大并发任务数 (默认: 2)
   --keep-audio          保留转换的音频文件
   --single FILE         只处理指定的单个视频文件
   --pending-poll-interval N     队列中任务的轮询间隔(秒) (默认: 15)
@@ -97,7 +98,8 @@ python whisper_client.py --scan-dir ~/Videos --keep-audio
 python whisper_client.py \
   --server http://192.168.1.100:8000 \
   --scan-dir ~/Videos \
-  --model large-v3-turbo
+  --model large-v3-turbo \
+  --max-workers 3
 
 # 指定输出目录
 python whisper_client.py \
@@ -126,15 +128,11 @@ python whisper_client.py \
 
 1. **扫描目录** - 递归查找所有支持的视频文件
 2. **检查字幕** - 跳过已有`.srt`文件的视频
-3. **串行处理** - 主线程一个文件一个文件地处理：
-   - 音频转换：使用ffmpeg转换为OGG格式
-   - 检查空闲：查询服务端任务池状态
-   - 等待空闲：如果任务池满则等待5秒后重试
-   - 提交任务：上传音频到Whisper API服务器
-4. **后台等待** - 每个提交的任务在新线程中等待结果
-5. **保存字幕** - 将SRT文件保存到视频目录
-6. **清理文件** - 删除临时音频文件（可选保留）
-7. **等待完成** - 程序退出前等待所有线程完成
+3. **音频转换** - 使用ffmpeg转换为OGG格式
+4. **提交任务** - 上传音频到Whisper API服务器
+5. **等待结果** - 智能轮询服务器获取转录结果
+6. **保存字幕** - 将SRT文件保存到视频目录
+7. **清理文件** - 删除临时音频文件（可选保留）
 
 ## 智能轮询策略
 
@@ -165,12 +163,10 @@ ffmpeg -i input.mp4 -vn -acodec libopus -ar 16000 -ac 1 -b:a 24k output.ogg
 
 ## 配置选项
 
-### 处理策略
-- 串行处理：主线程一个文件一个文件地转录、压缩
-- 检查空闲：每次提交前检查服务端任务池状态
-- 等待空闲：如果任务池满则等待5秒后重试
-- 后台等待：提交成功后在新线程中等待结果
-- 程序退出：等待所有线程完成后才退出
+### 并发处理
+- `--max-workers 2` - 默认2个并发任务
+- 建议根据服务器性能调整
+- 过高的并发可能导致服务器过载
 
 ### 轮询间隔配置
 - `--pending-poll-interval 15` - 队列中任务轮询间隔（秒）
@@ -227,23 +223,23 @@ ffmpeg -i input.mp4 -vn -acodec libopus -ar 16000 -ac 1 -b:a 24k output.ogg
 
 ### 性能优化
 
-1. **轮询间隔调优**：
+1. **并发调优**：
+   - 服务器性能好：`--max-workers 3-5`
+   - 服务器性能一般：`--max-workers 1-2`
+
+2. **轮询间隔调优**：
    - 快速网络：`--processing-poll-interval 3 --pending-poll-interval 10`
    - 慢速网络：`--processing-poll-interval 10 --pending-poll-interval 30`
    - 减少服务器负载：增加轮询间隔
    - 提高响应速度：减少轮询间隔
 
-2. **模型选择**：
+3. **模型选择**：
    - 快速处理：使用`base`或`small`模型
    - 高精度：使用`large-v3-turbo`模型
 
-3. **网络优化**：
+4. **网络优化**：
    - 使用本地服务器减少网络延迟
    - 检查网络带宽是否足够
-
-4. **服务器配置**：
-   - 适当调整服务器任务池大小
-   - 确保服务器有足够的内存和计算资源
 
 ## 注意事项
 
@@ -259,7 +255,8 @@ ffmpeg -i input.mp4 -vn -acodec libopus -ar 16000 -ac 1 -b:a 24k output.ogg
 ```bash
 python whisper_client.py \
   --scan-dir ~/Movies \
-  --model large-v3-turbo
+  --model large-v3-turbo \
+  --max-workers 2
 ```
 
 ### 处理学习视频
@@ -267,7 +264,7 @@ python whisper_client.py \
 python whisper_client.py \
   --scan-dir ~/Education \
   --model small \
-  --keep-files
+  --keep-audio
 ```
 
 ### 单文件测试
