@@ -287,6 +287,7 @@ class WhisperClient:
     def wait_for_result(self, task_id: str, timeout: int = None) -> Optional[str]:
         """等待任务完成并获取结果（智能轮询：处理中5秒，队列中15秒）"""
         start_time = time.time()
+        first_check = True
         
         while True:  # 无限循环，直到任务完成或失败
             try:
@@ -300,7 +301,11 @@ class WhisperClient:
                 if status_response.status_code == 200:
                     status_data = status_response.json()
                     current_status = status_data.get('status', 'unknown')
-                    self.logger.info(f"任务状态: {task_id} -> {current_status}")
+                    
+                    # 只在第一次检查时显示状态
+                    if first_check:
+                        self.logger.info(f"任务状态: {task_id} -> {current_status}")
+                        first_check = False
                     
                     # 如果任务失败，直接返回
                     if current_status == 'failed':
