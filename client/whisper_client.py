@@ -159,7 +159,6 @@ class WhisperClient:
         temp_audio_path = self.temp_dir / f"temp_{unique_id}.ogg"
         
         try:
-            self.logger.info(f"转换音频: {video_path.name}")
             
             # ffmpeg命令
             cmd = [
@@ -239,7 +238,6 @@ class WhisperClient:
                 final_zip_path = self.temp_dir / f"{task_id}.zip.enc"
                 shutil.move(encrypted_zip_path, final_zip_path)
                 
-                self.logger.info(f"✓ 任务包创建完成: {final_zip_path.name}")
                 return final_zip_path
                 
         except Exception as e:
@@ -418,7 +416,6 @@ class WhisperClient:
         self.logger.info(f"开始处理: {video_path}")
         
         # 1. 转换为音频（保存到临时目录）
-        self.logger.info(f"步骤1: 转换视频为音频")
         audio_path = self.convert_to_audio(video_path)
         if not audio_path:
             self.logger.error(f"音频转换失败: {video_path}")
@@ -429,14 +426,12 @@ class WhisperClient:
         
         try:
             # 2. 创建任务包（保存到临时目录）
-            self.logger.info(f"步骤2: 创建任务包")
             zip_path = self.create_task_zip(audio_path, task_id, model)
             if not zip_path:
                 self.logger.error(f"任务包创建失败: {video_path}")
                 return False
             
             # 3. 提交任务
-            self.logger.info(f"步骤3: 提交任务到服务器")
             if not self.submit_task(zip_path, task_id):
                 self.logger.error(f"任务提交失败: {video_path}")
                 return False
@@ -448,7 +443,6 @@ class WhisperClient:
                 return False
             
             # 5. 保存字幕文件（到视频目录）
-            self.logger.info(f"步骤5: 保存字幕文件")
             success = self.save_srt_file(video_path, srt_content)
             
             if success:
@@ -461,7 +455,6 @@ class WhisperClient:
         finally:
             # 6. 清理临时文件（除非指定保留）
             if not keep_files and audio_path and zip_path:
-                self.logger.info(f"步骤6: 清理临时文件")
                 self.cleanup_temp_files(audio_path, zip_path)
     
     def process_all_videos(self, model: str = "large-v3", 
