@@ -339,19 +339,15 @@ class WhisperClient:
                 if current_status == 'processing':
                     # 处理中的任务使用配置的轮询间隔
                     wait_time = self.processing_poll_interval
-                    self.logger.info(f"任务处理中，{wait_time}秒后再次检查...")
                 elif current_status == 'pending':
                     # 队列中的任务使用配置的轮询间隔
                     wait_time = self.pending_poll_interval
-                    self.logger.info(f"任务排队中，{wait_time}秒后再次检查...")
                 elif current_status == 'completed':
                     # 已完成但可能结果还没准备好，快速检查
                     wait_time = 2
-                    self.logger.info(f"任务已完成，{wait_time}秒后检查结果...")
                 else:
                     # 未知状态，使用默认间隔
                     wait_time = 10
-                    self.logger.info(f"任务状态未知({current_status})，{wait_time}秒后再次检查...")
                 
                 time.sleep(wait_time)
                 
@@ -441,7 +437,6 @@ class WhisperClient:
                 return False
             
             # 4. 等待结果（无超时限制）
-            self.logger.info(f"步骤4: 等待转录完成: {task_id}")
             srt_content = self.wait_for_result(task_id)  # 移除timeout参数，无限等待
             if not srt_content:
                 self.logger.error(f"获取转录结果失败: {video_path}")
